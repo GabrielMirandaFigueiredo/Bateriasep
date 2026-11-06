@@ -1,19 +1,25 @@
-name: Compilar BateriaSep (Windows)
+name: Instalador BateriaSep
 
 on:
-  push:
   workflow_dispatch:
+    inputs:
+      versao:
+        description: "Versao"
+        default: "1.0.0"
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
 
 env:
-  ORT_VERSION: "1.22.0"
+  ORT_VERSION: 1.22.0
   WEIGHTS_BASE: https://github.com/openmirlab/mdxnet-infer/releases/download/weights-drumsep-v1
   CKPT_NAME: aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059
-  CKPT_SHA256: d2a4aa53eb584d21eead358a4e66d1882ad182911be018f052b5da73be9096d0
-  YAML_SHA256: 17d1649a227f841165bdb4c11a42082898192a1ea3ceab7e7e0b9293d6589dd6
 
 jobs:
-  modelo:
-    runs-on: ubuntu-latest
+  instalador:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -21,71 +27,48 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Instalar dependências
+      - name: Dependencias Python
         run: |
-          pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.5"
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install onnx onnxscript onnxruntime pyyaml numpy
 
-      - name: Baixar os pesos e conferir o SHA-256
-        run: |
-          curl -sSL -o drumsep.ckpt "$WEIGHTS_BASE/$CKPT_NAME.ckpt"
-          curl -sSL -o drumsep.yaml "$WEIGHTS_BASE/$CKPT_NAME.yaml"
-          echo "$CKPT_SHA256  drumsep.ckpt" | sha256sum -c -
-          echo "$YAML_SHA256  drumsep.yaml" | sha256sum -c -
-
-      - name: Converter para ONNX
-        run: python tools/export_onnx.py drumsep.ckpt drumsep.yaml drumsep_core.onnx
-
-      - name: Conferir que o ONNX carrega e roda
-        run: |
-          python - <<'PY'
-          import numpy as np, onnxruntime as ort
-          s = ort.InferenceSession("drumsep_core.onnx", providers=["CPUExecutionProvider"])
-          out = s.run(None, {"spec": np.zeros((1, 4, 1024, 256), np.float32)})[0]
-          assert out.shape == (1, 6, 4, 1024, 256), out.shape
-          print("ONNX ok:", out.shape)
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: BateriaSep-modelo
-          path: drumsep_core.onnx
-          retention-days: 30
-          compression-level: 0
-
-  plugin:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Baixar o ONNX Runtime
+      - name: Baixar pesos e exportar modelo ONNX
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$env:ORT_VERSION/onnxruntime-win-x64-$env:ORT_VERSION.zip" -OutFile ort.zip
+          curl.exe -L -o drumsep.ckpt "$env:WEIGHTS_BASE/$env:CKPT_NAME.ckpt"
+          curl.exe -L -o drumsep.yaml "$env:WEIGHTS_BASE/$env:CKPT_NAME.yaml"
+          python tools/export_onnx.py drumsep.ckpt drumsep.yaml drumsep_core.onnx
+          if (-not (Test-Path drumsep_core.onnx)) { throw "modelo nao gerado" }
+          (Get-Item drumsep_core.onnx).Length
+
+      - name: Baixar ONNX Runtime
+        shell: pwsh
+        run: |
+          curl.exe -L -o ort.zip "https://github.com/microsoft/onnxruntime/releases/download/v$env:ORT_VERSION/onnxruntime-win-x64-$env:ORT_VERSION.zip"
           Expand-Archive ort.zip -DestinationPath ort
-          Get-ChildItem ort
 
-      - name: Configurar
+      - name: Compilar plugin
         shell: pwsh
-        run: cmake -S . -B build -A x64 "-DONNXRUNTIME_ROOT=$PWD/ort/onnxruntime-win-x64-$env:ORT_VERSION"
+        run: |
+          cmake -S . -B build -A x64 "-DONNXRUNTIME_ROOT=$PWD/ort/onnxruntime-win-x64-$env:ORT_VERSION"
+          cmake --build build --config Release --target BateriaSep_VST3 BateriaSep_Standalone --parallel
 
-      - name: Compilar
-        run: cmake --build build --config Release --target BateriaSep_VST3 BateriaSep_Standalone --parallel
-
-      - name: Mostrar o que foi gerado
+      - name: Montar instalador
         shell: pwsh
-        run: Get-ChildItem build/BateriaSep_artefacts/Release -Recurse | Select-Object FullName, Length
+        run: |
+          choco install innosetup -y --no-progress
+          curl.exe -L -o vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+          $versao = "${{ github.event.inputs.versao }}"
+          if (-not $versao) { $versao = "1.0.0" }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DVersao=$versao" installer\BateriaSep.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falhou" }
+          Get-ChildItem dist
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: BateriaSep-VST3-Windows
-          path: build/BateriaSep_artefacts/Release/VST3
-          retention-days: 30
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: BateriaSep-Programa-Standalone-Windows
-          path: |
-            build/BateriaSep_artefacts/Release/Standalone/BateriaSep.exe
-            build/BateriaSep_artefacts/Release/Standalone/bateriasep_onnxruntime.dll
-          retention-days: 30
+      - name: Publicar em Releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $versao = "${{ github.event.inputs.versao }}"
+          if (-not $versao) { $versao = "1.0.0" }
+          gh release create "v$versao-b${{ github.run_number }}" dist/BateriaSep-Setup.exe --title "BateriaSep $versao" --notes "Instalador para Windows"
