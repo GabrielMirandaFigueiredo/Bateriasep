@@ -11,17 +11,18 @@ mkdir -p "$ROOT/Library/Audio/Plug-Ins/VST3" "$ROOT/Applications" "$ROOT/Library
 ditto "$VST" "$ROOT/Library/Audio/Plug-Ins/VST3/BateriaSep.vst3"
 ditto "$APP" "$ROOT/Applications/BateriaSep.app"
 cp "$MODELO" "$ROOT/Library/Application Support/BateriaSep/drumsep_core.onnx"
-
+ 
 # nao deixa o instalador "mover" os pacotes para outro lugar se ja existir uma copia
 pkgbuild --analyze --root "$ROOT" "$TMP/components.plist" >/dev/null
 i=0
 while /usr/libexec/PlistBuddy -c "Print :$i" "$TMP/components.plist" >/dev/null 2>&1; do
-  /usr/libexec/PlistBuddy -c "Set :$i:BundleIsRelocatable false" "$TMP/components.plist"
+  /usr/libexec/PlistBuddy -c "Set :$i:BundleIsRelocatable false" "$TMP/components.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :$i:BundleIsRelocatable bool false" "$TMP/components.plist"
   i=$((i+1))
 done
 pkgbuild --root "$ROOT" --component-plist "$TMP/components.plist" --identifier com.gabriel.bateriasep \
          --version "$VERSAO" --install-location / --ownership recommended "$TMP/BateriaSep-component.pkg"
-
+ 
 sed "s/@VERSAO@/$VERSAO/g" "$AQUI/distribution.xml" > "$TMP/distribution.xml"
 productbuild --distribution "$TMP/distribution.xml" --resources "$AQUI/resources" \
              --package-path "$TMP" "$OUT/BateriaSep-$VERSAO-mac.pkg"
