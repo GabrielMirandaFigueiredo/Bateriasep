@@ -6,19 +6,80 @@ on:
       versao:
         description: "Versao"
         default: "1.0.0"
-  push:
-    branches: [main]
+      plataforma:
+        description: "Qual instalador gerar"
+        type: choice
+        default: todas
+        options: [todas, windows, mac, linux]
 
 permissions:
   contents: write
 
 env:
+  VERSAO: ${{ inputs.versao || '1.0.0' }}
   ORT_VERSION: 1.22.0
   WEIGHTS_BASE: https://github.com/openmirlab/mdxnet-infer/releases/download/weights-drumsep-v1
   CKPT_NAME: aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059
+  CKPT_SHA256: d2a4aa53eb584d21eead358a4e66d1882ad182911be018f052b5da73be9096d0
+  YAML_SHA256: 17d1649a227f841165bdb4c11a42082898192a1ea3ceab7e7e0b9293d6589dd6
+  TAG: v${{ inputs.versao || '1.0.0' }}-b${{ github.run_number }}
 
 jobs:
-  instalador:
+  # ------------------------------------------------------------------ Release (pagina de downloads)
+  preparar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Criar Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notas.md <<'NOTAS'
+          Baixe o arquivo do seu sistema:
+
+          - **Windows**: `BateriaSep-Setup.exe` (dois cliques). Se aparecer "O Windows protegeu o computador": Mais informacoes > Executar assim mesmo.
+          - **Mac**: `BateriaSep-*-mac.pkg` (dois cliques). Se o Mac bloquear: clique com o botao direito > Abrir, ou Ajustes do Sistema > Privacidade e Seguranca > "Abrir mesmo assim".
+          - **Linux (Ubuntu/Debian/Mint)**: `BateriaSep-*-linux-amd64.deb` (dois cliques ou `sudo apt install ./arquivo.deb`).
+          - **Linux (outras)**: `BateriaSep-*-linux.tar.gz`, extraia e rode `./install.sh`.
+
+          Depois de instalar, reescaneie os plugins VST3 na sua DAW.
+          NOTAS
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "BateriaSep $VERSAO" --notes-file notas.md
+
+  # ------------------------------------------------------------------ Modelo de IA (usado por Mac e Linux)
+  modelo:
+    if: inputs.plataforma == 'todas' || inputs.plataforma == 'mac' || inputs.plataforma == 'linux'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Dependencias Python
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install onnx onnxscript onnxruntime pyyaml numpy
+      - name: Baixar pesos (com conferencia) e exportar ONNX
+        run: |
+          curl -sSL -o drumsep.ckpt "$WEIGHTS_BASE/$CKPT_NAME.ckpt"
+          curl -sSL -o drumsep.yaml "$WEIGHTS_BASE/$CKPT_NAME.yaml"
+          echo "$CKPT_SHA256  drumsep.ckpt" | sha256sum -c -
+          echo "$YAML_SHA256  drumsep.yaml" | sha256sum -c -
+          python tools/export_onnx.py drumsep.ckpt drumsep.yaml drumsep_core.onnx
+          python -c "import onnxruntime as o; s=o.InferenceSession('drumsep_core.onnx'); print([i.name for i in s.get_inputs()])"
+          ls -la drumsep_core.onnx
+      - name: Guardar modelo na Release interna "modelo-onnx"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view modelo-onnx --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create modelo-onnx --repo "$GITHUB_REPOSITORY" --title "Modelo (uso interno dos builds)" \
+              --notes "Arquivo usado pelos builds de Mac e Linux. Nao precisa baixar." --prerelease --latest=false
+          gh release upload modelo-onnx drumsep_core.onnx --clobber --repo "$GITHUB_REPOSITORY"
+
+  # ------------------------------------------------------------------ Windows
+  windows:
+    needs: preparar
+    if: inputs.plataforma == 'todas' || inputs.plataforma == 'windows'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,9 +119,7 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
           curl.exe -L -o vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
-          $versao = "${{ github.event.inputs.versao }}"
-          if (-not $versao) { $versao = "1.0.0" }
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DVersao=$versao" installer\BateriaSep.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DVersao=$env:VERSAO" installer\BateriaSep.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC falhou" }
           Get-ChildItem dist
 
@@ -68,7 +127,80 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:TAG" dist/BateriaSep-Setup.exe --clobber
+
+  # ------------------------------------------------------------------ macOS (Intel + Apple Silicon)
+  mac:
+    needs: [preparar, modelo]
+    if: inputs.plataforma == 'todas' || inputs.plataforma == 'mac'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baixar modelo e ONNX Runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $versao = "${{ github.event.inputs.versao }}"
-          if (-not $versao) { $versao = "1.0.0" }
-          gh release create "v$versao-b${{ github.run_number }}" dist/BateriaSep-Setup.exe --title "BateriaSep $versao" --notes "Instalador para Windows"
+          gh release download modelo-onnx -p drumsep_core.onnx --repo "$GITHUB_REPOSITORY"
+          curl -sSL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-osx-universal2-$ORT_VERSION.tgz"
+          mkdir ort && tar -xzf ort.tgz -C ort
+          ls ort/*/lib
+
+      - name: Compilar plugin
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DONNXRUNTIME_ROOT="$PWD/ort/onnxruntime-osx-universal2-$ORT_VERSION"
+          cmake --build build --config Release --target BateriaSep_VST3 BateriaSep_Standalone --parallel 4
+          find build/BateriaSep_artefacts -maxdepth 3
+
+      - name: Assinar (ad hoc) e montar .pkg
+        run: |
+          A=build/BateriaSep_artefacts/Release
+          codesign --force --deep --sign - "$A/VST3/BateriaSep.vst3"
+          codesign --force --deep --sign - "$A/Standalone/BateriaSep.app"
+          chmod +x installer/mac/make_pkg.sh
+          installer/mac/make_pkg.sh "$VERSAO" "$A/VST3/BateriaSep.vst3" "$A/Standalone/BateriaSep.app" drumsep_core.onnx dist
+
+      - name: Publicar em Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/*.pkg --clobber
+
+  # ------------------------------------------------------------------ Linux (.deb + .tar.gz)
+  linux:
+    needs: [preparar, modelo]
+    if: inputs.plataforma == 'todas' || inputs.plataforma == 'linux'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias de compilacao
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+
+      - name: Baixar modelo e ONNX Runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download modelo-onnx -p drumsep_core.onnx --repo "$GITHUB_REPOSITORY"
+          curl -sSL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-linux-x64-$ORT_VERSION.tgz"
+          mkdir ort && tar -xzf ort.tgz -C ort
+
+      - name: Compilar plugin
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DONNXRUNTIME_ROOT="$PWD/ort/onnxruntime-linux-x64-$ORT_VERSION"
+          cmake --build build --target BateriaSep_VST3 BateriaSep_Standalone --parallel 4
+
+      - name: Montar pacotes
+        run: |
+          A=build/BateriaSep_artefacts/Release
+          chmod +x installer/linux/*.sh
+          installer/linux/make_packages.sh "$VERSAO" "$A/VST3/BateriaSep.vst3" "$A/Standalone" drumsep_core.onnx dist
+
+      - name: Publicar em Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/*.deb dist/*.tar.gz --clobber
