@@ -559,6 +559,13 @@ static juce::Array<juce::File> searchDirs()
     dirs.add (exe.getParentDirectory());
     dirs.add (exe.getParentDirectory().getParentDirectory().getChildFile ("Resources"));
     dirs.add (BateriaSepProcessor::getUserDataDir());
+    // pasta onde o instalador coloca o modelo (C:\Program Files\BateriaSep)
+    dirs.add (juce::File::getSpecialLocation (juce::File::globalApplicationsDirectory).getChildFile ("BateriaSep"));
+   #if JUCE_MAC
+    dirs.add (juce::File ("/Library/Application Support/BateriaSep"));   // instalador .pkg
+   #elif JUCE_LINUX
+    dirs.add (juce::File ("/opt/BateriaSep"));                           // instalador .deb
+   #endif
     return dirs;
 }
 
@@ -593,7 +600,11 @@ juce::File BateriaSepProcessor::findOrtLibrary() const
         if (f.existsAsFile()) return f;
        #else
         juce::Array<juce::File> found;
+       #if JUCE_MAC
+        d.findChildFiles (found, juce::File::findFiles, false, "libonnxruntime*.dylib");
+       #else
         d.findChildFiles (found, juce::File::findFiles, false, "libonnxruntime.so*");
+       #endif
         if (found.size() > 0) return found[0];
        #endif
     }

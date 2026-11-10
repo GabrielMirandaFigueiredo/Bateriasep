@@ -1,0 +1,8 @@
+BateriaSep para Linux
+=====================
+1. Extraia esta pasta.
+2. Abra um terminal dentro dela e rode:   ./install.sh
+3. Na sua DAW, reescaneie os plugins VST3 e procure "BateriaSep".
+
+Nao precisa de sudo. O plugin vai para ~/.vst3 e o modelo de IA para ~/.config/BateriaSep.
+Para desinstalar: apague ~/.vst3/BateriaSep.vst3, ~/.local/share/BateriaSep e ~/.config/BateriaSep.

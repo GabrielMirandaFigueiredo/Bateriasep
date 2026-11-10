@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>BateriaSep</title>
+    <welcome file="welcome.html"/>
+    <conclusion file="conclusion.html"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <domains enable_anywhere="false" enable_localSystem="true"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.gabriel.bateriasep"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.gabriel.bateriasep" visible="false">
+        <pkg-ref id="com.gabriel.bateriasep"/>
+    </choice>
+    <pkg-ref id="com.gabriel.bateriasep" version="@VERSAO@" onConclusion="none">BateriaSep-component.pkg</pkg-ref>
+</installer-gui-script>

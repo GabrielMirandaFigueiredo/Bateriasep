@@ -60,7 +60,8 @@ int main (int argc, char** argv)
 
     const juce::File audio (argv[1]), model (argv[2]), outDir (argv[4]);
     outDir.createDirectory();
-    setenv ("BATERIASEP_ORT", argv[3], 1);
+    const bool autoFind = juce::String (argv[2]) == "auto";   // testa a busca automática (instalador)
+    if (! autoFind) setenv ("BATERIASEP_ORT", argv[3], 1);
 
     constexpr double sr = 48000.0;
     constexpr int bs = 512;
@@ -68,7 +69,7 @@ int main (int argc, char** argv)
     BateriaSepProcessor proc;
     proc.setPlayConfigDetails (2, 2, sr, bs);
     proc.prepareToPlay (sr, bs);
-    proc.setModelFile (model);
+    if (! autoFind) proc.setModelFile (model);
     setParam (proc, "quality", 0.0f);   // Rápida (mais veloz)
 
     std::printf ("== Carregando e separando (qualidade Rápida) ==\n");

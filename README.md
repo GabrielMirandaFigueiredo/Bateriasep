@@ -59,3 +59,13 @@ sem internet e sem placa de vídeo.
   Não distribua o plugin com o modelo dentro nem venda sem confirmar com os autores.
 - Código do modelo (`tools/mdx23c`): MIT (veja `tools/mdx23c/LICENSE-mdxnet-infer`).
 - ONNX Runtime: MIT. JUCE: AGPLv3 ou licença comercial (uso pessoal sem problema; para distribuir/vender, respeite a licença).
+
+## Instaladores (Windows, Mac e Linux)
+
+O workflow `.github/workflows/build.yml` (Actions > Instalador BateriaSep > Run workflow) gera e publica na aba **Releases**:
+
+- Windows: `BateriaSep-Setup.exe`
+- Mac (Intel e Apple Silicon): `BateriaSep-<versao>-mac.pkg`
+- Linux: `BateriaSep-<versao>-linux-amd64.deb` e `BateriaSep-<versao>-linux.tar.gz` (rode `./install.sh`)
+
+Os scripts de empacotamento ficam em `installer/` (Inno Setup, `mac/make_pkg.sh`, `linux/make_packages.sh`).
