@@ -44,5 +44,3 @@ O workflow `.github/workflows/build.yml` (Actions > Instalador BateriaSep > Run 
 - Windows: `BateriaSep-Setup.exe`
 - Mac (Intel e Apple Silicon): `BateriaSep-<versao>-mac.pkg`
 - Linux: `BateriaSep-<versao>-linux-amd64.deb` e `BateriaSep-<versao>-linux.tar.gz` (rode `./install.sh`)
-
-Os scripts de empacotamento ficam em `installer/` (Inno Setup, `mac/make_pkg.sh`, `linux/make_packages.sh`).
