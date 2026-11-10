@@ -19,23 +19,6 @@ sem internet e sem placa de vídeo.
 - Ao reabrir o projeto da DAW, o plugin recarrega os stems da pasta (sem separar de novo) e restaura faders/mute/solo.
 - **Qualidade:** *Padrão* (mais fiel ao modelo) ou *Rápida* (cerca de 2x mais veloz, um pouco menos de qualidade).
 
-## Como gerar os arquivos para Windows (sem instalar nada no seu PC)
-
-1. Crie um repositório no GitHub e envie esta pasta inteira.
-2. Aba **Actions** → *Compilar BateriaSep (Windows)* → **Run workflow**. Leva uns 10-15 minutos.
-   (Ele converte o modelo para ONNX e compila o plugin.)
-3. Quando terminar, baixe os artefatos:
-   - **BateriaSep-VST3-Windows** (zip que contém a pasta `BateriaSep.vst3`)
-   - **BateriaSep-modelo** (arquivo `drumsep_core.onnx`, ~437 MB)
-   - opcional: **BateriaSep-Programa-Standalone-Windows** (`BateriaSep.exe`, funciona sem DAW)
-4. Instale:
-   - copie a pasta `BateriaSep.vst3` inteira para `C:\Program Files\Common Files\VST3`
-   - copie `drumsep_core.onnx` para `%APPDATA%\BateriaSep\` (crie a pasta se não existir).
-     Se preferir deixar em outro lugar, use o botão **Localizar modelo...** no plugin.
-5. Reescaneie os plugins na DAW.
-
-> Os artefatos do GitHub ficam 30 dias. Contas gratuitas têm 500 MB de espaço para artefatos em repositórios
-> privados: o modelo sozinho usa ~437 MB, então apague execuções antigas ou baixe e apague.
 
 ## Usando
 
@@ -46,12 +29,6 @@ sem internet e sem placa de vídeo.
 - Se a janela avisar "Não consegui carregar bateriasep_onnxruntime.dll (erro 126)", instale o
   *Microsoft Visual C++ Redistributable 2015-2022 (x64)*.
 
-## Testes
-
-- `tests/test_separator.cpp`: STFT/ISTFT/reamostrador contra o PyTorch e separação completa contra o Python (120 dB de precisão).
-- `tests/test_bpm.cpp`: detector de BPM em sinais sintéticos e nas peças reais.
-- `tests/test_plugin.cpp`: teste de integração do plugin (carregar, separar, tocar, mute/solo, seleção, exportar, reabrir).
-  Compile com `-DBATERIASEP_BUILD_TESTS=ON`.
 
 ## Licenças e avisos
 
