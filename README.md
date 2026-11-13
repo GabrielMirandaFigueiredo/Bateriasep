@@ -1,3 +1,5 @@
+<img width="1060" height="880" alt="image" src="https://github.com/user-attachments/assets/714d50d1-cc6a-42fc-813a-a0d6ff129c21" />
+
 # BateriaSep (VST3)
 
 Plugin que separa uma gravação de bateria (inclusive de **um microfone só**) em 6 peças com IA:
