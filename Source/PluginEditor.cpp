@@ -232,13 +232,98 @@ StemStrip::StemStrip (BateriaSepProcessor& p, int stemIndex) : proc (p), index (
             return f;
         };
         addAndMakeVisible (drag);
+
+        trigMode.addItemList ({ "Original", "Somar sample", "Substituir" }, 1);
+        trigMode.setTooltip ("Original: só o som gravado. Somar: o sample toca junto com o som gravado. Substituir: só o sample toca (o som gravado é silenciado).");
+        addAndMakeVisible (trigMode);
+        trigModeAtt = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, BateriaSepProcessor::trigModeId (index), trigMode);
+
+        trigSamplesBtn.setTooltip ("Escolher o kit padrão ou importar seus próprios samples");
+        trigSamplesBtn.onClick = [this] { showSamplesMenu(); };
+        addAndMakeVisible (trigSamplesBtn);
+
+        trigLevel.setSliderStyle (juce::Slider::LinearHorizontal);
+        trigLevel.setTextBoxStyle (juce::Slider::TextBoxRight, false, 58, 20);
+        trigLevel.setTextValueSuffix (" dB");
+        trigLevel.setDoubleClickReturnValue (true, 0.0);
+        trigLevel.setTooltip ("Volume do sample (a intensidade de cada golpe continua sendo respeitada)");
+        addAndMakeVisible (trigLevel);
+        trigLevelAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, BateriaSepProcessor::trigLevelId (index), trigLevel);
     }
+    else
+    {
+        trigExportBtn.setButtonText ("Exportar com triggers");
+        trigExportBtn.setTooltip ("Ligado: \"Exportar\" e \"Arrastar\" usam o som dos triggers nas peças em Somar/Substituir");
+        addAndMakeVisible (trigExportBtn);
+        trigExportAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "trigExport", trigExportBtn);
+    }
+}
+
+void StemStrip::showSamplesMenu()
+{
+    juce::PopupMenu m;
+    const bool custom = shownSourceLabel.isNotEmpty() && ! shownSourceLabel.startsWith ("Kit");
+    m.addItem (1, "Usar o kit padrão (Big Rusty Drums)"_u8, true, ! custom);
+    m.addItem (2, "Importar meus samples..."_u8);
+    m.addSeparator();
+    m.addItem (3, "Dica: 1 arquivo = 1 intensidade. Com vários, use nomes em ordem (do suave ao forte)."_u8, false);
+    juce::Component::SafePointer<StemStrip> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&trigSamplesBtn), [safe] (int r)
+    {
+        if (safe == nullptr) return;
+        if (r == 1)
+        {
+            juce::Thread::launch ([safe]
+            {
+                if (safe == nullptr) return;
+                auto& pr = safe->proc;
+                pr.useDefaultTriggerKit (safe->index);
+                juce::MessageManager::callAsync ([safe] { if (safe != nullptr && safe->onMessage) safe->onMessage ("Kit padrão restaurado."_u8); });
+            });
+        }
+        else if (r == 2) safe->importSamples();
+    });
+}
+
+void StemStrip::importSamples()
+{
+    sampleChooser = std::make_unique<juce::FileChooser> ("Escolha os samples (um ou vários)"_u8,
+                                                         juce::File::getSpecialLocation (juce::File::userMusicDirectory),
+                                                         "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
+    juce::Component::SafePointer<StemStrip> safe (this);
+    sampleChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                                    | juce::FileBrowserComponent::canSelectMultipleItems,
+                                [safe] (const juce::FileChooser& fc)
+                                {
+                                    juce::StringArray files;
+                                    for (auto& f : fc.getResults()) files.add (f.getFullPathName());
+                                    if (safe == nullptr || files.isEmpty()) return;
+                                    juce::Thread::launch ([safe, files]
+                                    {
+                                        if (safe == nullptr) return;
+                                        juce::String msg;
+                                        safe->proc.setTriggerSamples (safe->index, files, msg);
+                                        juce::MessageManager::callAsync ([safe, msg] { if (safe != nullptr && safe->onMessage) safe->onMessage (msg); });
+                                    });
+                                });
 }
 
 void StemStrip::refresh (const std::shared_ptr<const StemData>& stems, bool hasFiles)
 {
     if (stems != shown) { shown = stems; repaint(); }
-    if (index < kNumStems) drag.setActive (hasFiles);
+    if (index < kNumStems)
+    {
+        drag.setActive (hasFiles);
+        trigMode.setEnabled (stems != nullptr);
+        trigSamplesBtn.setEnabled (stems != nullptr);
+        const auto label = proc.getTriggerSourceLabel (index);
+        if (label != shownSourceLabel)
+        {
+            shownSourceLabel = label;
+            trigSamplesBtn.setButtonText (label.startsWith ("Kit") ? "Kit padrão  v"_u8 : label + "  v");
+        }
+    }
+    else trigExportBtn.setEnabled (stems != nullptr);
 
     const float v = proc.getMeter (index);
     if (std::abs (v - meterShown) > 0.002f) { meterShown = v; repaint (meterArea); }
@@ -254,9 +339,15 @@ void StemStrip::resized()
     r.removeFromTop (24);   // nome
     if (index < kNumStems)
     {
-        waveArea = r.removeFromTop (34);
+        waveArea = r.removeFromTop (28);
         r.removeFromTop (4);
         drag.setBounds (r.removeFromTop (22));
+        r.removeFromTop (6);
+        trigMode.setBounds (r.removeFromTop (22));
+        r.removeFromTop (3);
+        trigSamplesBtn.setBounds (r.removeFromTop (22));
+        r.removeFromTop (3);
+        trigLevel.setBounds (r.removeFromTop (20));
         r.removeFromTop (6);
         auto ms = r.removeFromBottom (28);
         muteBtn.setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (2, 0));
@@ -266,6 +357,10 @@ void StemStrip::resized()
     else
     {
         r.removeFromBottom (32);
+        // mesmo espaço dos controles de trigger, para os faders ficarem alinhados
+        r.removeFromTop (28 + 4 + 22 + 6);
+        trigExportBtn.setBounds (r.removeFromTop (22));
+        r.removeFromTop (3 + 22 + 3 + 20 + 6);
     }
     dbLabel.setBounds (r.removeFromBottom (20));
     r.removeFromBottom (4);
@@ -347,10 +442,17 @@ BateriaSepEditor::BateriaSepEditor (BateriaSepProcessor& p)
     addAndMakeVisible (progressBar);
     addAndMakeVisible (wave);
     addAndMakeVisible (dragAll);
+    for (auto* b : { &exportMidiBtn }) addAndMakeVisible (b);
+    addAndMakeVisible (midiSensSlider);
+    addAndMakeVisible (midiSensLabel);
+    addAndMakeVisible (midiInfoLabel);
+    addAndMakeVisible (dragMidi);
+    addAndMakeVisible (dragMidiOne);
 
     for (int i = 0; i < 7; ++i)
     {
         strips.add (new StemStrip (proc, i));
+        strips.getLast()->onMessage = [this] (const juce::String& t) { flash (t); };
         addAndMakeVisible (strips.getLast());
     }
 
@@ -381,6 +483,35 @@ BateriaSepEditor::BateriaSepEditor (BateriaSepProcessor& p)
     dragAll.text = "Arrastar todos os stems para a DAW";
     dragAll.getFiles = [this] { return proc.getStemPaths(); };
 
+    // --- MIDI ---
+    midiSensLabel.setText ("Sensibilidade do MIDI", juce::dontSendNotification);
+    midiSensLabel.setFont (juce::FontOptions (12.0f));
+    midiSensLabel.setColour (juce::Label::textColourId, ui::textDim);
+    midiInfoLabel.setFont (juce::FontOptions (11.5f));
+    midiInfoLabel.setMinimumHorizontalScale (1.0f);
+    midiInfoLabel.setColour (juce::Label::textColourId, ui::textDim);
+    midiInfoLabel.setJustificationType (juce::Justification::centredLeft);
+    midiSensSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    midiSensSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    midiSensSlider.setColour (juce::Slider::trackColourId, ui::accent.withAlpha (0.6f));
+    midiSensSlider.setColour (juce::Slider::thumbColourId, ui::textMain);
+    midiSensSlider.setColour (juce::Slider::backgroundColourId, juce::Colour (0xff0b0c0f));
+    midiSensSlider.setTooltip ("Mais à direita = mais notas (inclusive as bem fracas). Mais à esquerda = só os golpes fortes.");
+    midiSensAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, "midiSens", midiSensSlider);
+    dragMidi.text = "Arrastar stems MIDI";
+    dragMidi.colour = ui::amber;
+    dragMidi.getFiles = [this] { return proc.getMidiPaths(); };
+    dragMidiOne.text = "Arrastar MIDI único"_u8;
+    dragMidiOne.colour = ui::amber;
+    dragMidiOne.getFiles = [this]
+    {
+        juce::StringArray a;
+        const auto p = proc.getMidiCombinedPath();
+        if (p.isNotEmpty()) a.add (p);
+        return a;
+    };
+    exportMidiBtn.onClick = [this] { chooseMidiFolder(); };
+
     wave.getBeatPeriod = [this]
     {
         if (! gridBtn.getToggleState() || shownStems == nullptr || ! shownStems->bpm.valid) return 0.0;
@@ -403,7 +534,7 @@ BateriaSepEditor::BateriaSepEditor (BateriaSepProcessor& p)
         if (auto sd = proc.getStems()) if (sd->folder.isDirectory()) sd->folder.revealToUser();
     };
 
-    setSize (1060, 770);   // por último: resized() precisa que todos os componentes já existam
+    setSize (1060, 880);   // por último: resized() precisa que todos os componentes já existam
     startTimerHz (30);
     timerCallback();
 }
@@ -477,7 +608,20 @@ void BateriaSepEditor::resized()
 
     r.removeFromTop (8);
 
-    // --- rodapé ---
+    // --- rodapé (linha do MIDI, embaixo; depois a linha dos stems) ---
+    auto footerMidi = r.removeFromBottom (44);
+    exportMidiBtn.setBounds (footerMidi.removeFromLeft (150).reduced (0, 5));
+    footerMidi.removeFromLeft (14);
+    midiSensLabel.setBounds (footerMidi.removeFromLeft (128).reduced (0, 5));
+    midiSensSlider.setBounds (footerMidi.removeFromLeft (110).reduced (0, 8));
+    footerMidi.removeFromLeft (12);
+    dragMidiOne.setBounds (footerMidi.removeFromRight (172).reduced (0, 5));
+    footerMidi.removeFromRight (8);
+    dragMidi.setBounds (footerMidi.removeFromRight (172).reduced (0, 5));
+    footerMidi.removeFromRight (10);
+    midiInfoLabel.setBounds (footerMidi.reduced (0, 1));
+    r.removeFromBottom (2);
+
     auto footer = r.removeFromBottom (44);
     openFolderBtn.setBounds (footer.removeFromRight (170).reduced (0, 5));
     footer.removeFromRight (8);
@@ -578,6 +722,50 @@ void BateriaSepEditor::timerCallback()
     halfBtn.setEnabled (hasStems);
     doubleBtn.setEnabled (hasStems);
     dragAll.setActive (hasFiles);
+
+    // --- MIDI: informa o BPM exibido e regera os arquivos (com pequeno atraso) quando algo muda ---
+    {
+        const double bpmShown = (sd != nullptr && sd->bpm.valid) ? sd->bpm.bpm * bpmFactor : 0.0;
+        proc.setMidiTempo (bpmShown);
+        const float sens = (float) midiSensSlider.getValue();
+        const void* key = sd.get();
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        if (key != midiKeyStems || std::abs (sens - midiKeySens) > 1e-4f || std::abs (bpmShown - midiKeyBpm) > 1e-3)
+        {
+            midiKeyStems = key; midiKeySens = sens; midiKeyBpm = bpmShown;
+            midiRefreshAt = nowMs + 350.0;
+        }
+        if (hasStems && midiRefreshAt > 0.0 && nowMs >= midiRefreshAt && ! midiBusy)
+        {
+            midiRefreshAt = 0.0;
+            midiBusy = true;
+            juce::Component::SafePointer<BateriaSepEditor> safe (this);
+            juce::Thread::launch ([safe, this]
+            {
+                proc.refreshMidi();
+                juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->midiBusy = false; });
+            });
+        }
+        // triggers: monta o plano (notas + samples) quando alguma peça usa trigger e ele ainda não está pronto
+        if (hasStems && ! midiBusy && midiRefreshAt == 0.0 && ! trigBusy && nowMs >= trigRetryAt
+            && proc.anyTriggerOn() && ! proc.triggerPlanReady())
+        {
+            trigBusy = true;
+            trigRetryAt = nowMs + 3000.0;
+            juce::Component::SafePointer<BateriaSepEditor> safe (this);
+            juce::Thread::launch ([safe, this]
+            {
+                proc.rebuildTriggerPlan();
+                juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->trigBusy = false; });
+            });
+        }
+        midiInfoLabel.setText (hasStems ? (midiBusy || midiRefreshAt > 0.0 ? juce::String ("Gerando MIDI...") : proc.getMidiSummary())
+                                        : juce::String(), juce::dontSendNotification);
+        exportMidiBtn.setEnabled (hasStems);
+        midiSensSlider.setEnabled (hasStems);
+        dragMidi.setActive (hasStems);
+        dragMidiOne.setActive (hasStems);
+    }
     playBtn.setToggleState (proc.isPlaying(), juce::dontSendNotification);
     playBtn.setColour (juce::TextButton::buttonColourId, proc.isPlaying() ? ui::accent : ui::panel2);
     playBtn.setColour (juce::TextButton::textColourOffId, proc.isPlaying() ? juce::Colours::black : ui::textMain);
@@ -634,6 +822,21 @@ void BateriaSepEditor::chooseExportFolder()
                                   proc.exportStems (folder, fmt, msg);
                                   juce::MessageManager::callAsync ([safe, msg] { if (safe != nullptr) safe->flash (msg); });
                               });
+                          });
+}
+
+void BateriaSepEditor::chooseMidiFolder()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Escolha a pasta onde gravar os arquivos MIDI",
+                                                   juce::File::getSpecialLocation (juce::File::userDocumentsDirectory));
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              const auto folder = fc.getResult();
+                              if (folder == juce::File()) return;
+                              juce::String msg;
+                              proc.exportMidi (folder, msg);
+                              flash (msg);
                           });
 }
 

@@ -79,6 +79,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     DragHandle& getDragHandle() { return drag; }
+    std::function<void (const juce::String&)> onMessage;   // avisos para a barra de status
 
 private:
     BateriaSepProcessor& proc;
@@ -87,6 +88,20 @@ private:
     juce::TextButton muteBtn { "M" }, soloBtn { "S" };
     juce::Label dbLabel;
     DragHandle drag;
+
+    // triggers (só nas peças) e a opção de exportar com triggers (só no master)
+    juce::ComboBox trigMode;
+    juce::TextButton trigSamplesBtn;
+    juce::Slider trigLevel;
+    juce::ToggleButton trigExportBtn;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> trigModeAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> trigLevelAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> trigExportAtt;
+    std::unique_ptr<juce::FileChooser> sampleChooser;
+    juce::String shownSourceLabel;
+    void showSamplesMenu();
+    void importSamples();
+
     std::shared_ptr<const bateriasep::StemData> shown;
     float meterShown = 0.0f;
 
@@ -117,11 +132,13 @@ private:
     void chooseAudioFile();
     void chooseModelFile();
     void chooseExportFolder();
+    void chooseMidiFolder();
     void flash (const juce::String& text);
     juce::String formatTime (double seconds) const;
 
     BateriaSepProcessor& proc;
     BsLookAndFeel laf;
+    juce::TooltipWindow tooltipWindow { this, 600 };
 
     juce::TextButton loadBtn { "Carregar bateria..." }, cancelBtn { "Cancelar" }, modelBtn { "Localizar modelo..." };
     juce::ComboBox qualityBox;
@@ -138,6 +155,19 @@ private:
     juce::ComboBox formatBox;
     juce::TextButton exportBtn { "Exportar todos os stems..." }, openFolderBtn { "Abrir pasta dos stems" };
     DragHandle dragAll;
+
+    // MIDI
+    juce::Slider midiSensSlider;
+    juce::Label midiSensLabel, midiInfoLabel;
+    juce::TextButton exportMidiBtn { "Exportar MIDI..." };
+    DragHandle dragMidi, dragMidiOne;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> midiSensAtt;
+    const void* midiKeyStems = nullptr;
+    float midiKeySens = -1.0f;
+    double midiKeyBpm = -1.0, midiRefreshAt = 0.0;
+    bool midiBusy = false;
+    bool trigBusy = false;
+    double trigRetryAt = 0.0;
 
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> loopAtt, origAtt;

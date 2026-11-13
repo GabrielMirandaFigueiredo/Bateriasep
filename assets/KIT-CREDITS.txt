@@ -1,0 +1,10 @@
+Kit padrao de triggers do BateriaSep
+====================================
+Os samples vieram do "Big Rusty Drums" (Karoryfer Samples), liberado em dominio publico
+(licenca Creative Commons CC0 1.0 Universal): pode ser usado, copiado e distribuido sem restricao.
+
+Fonte:  https://github.com/sfzinstruments/karoryfer.big-rusty-drums
+Licenca: https://creativecommons.org/publicdomain/zero/1.0/
+
+Foram escolhidas 4 intensidades por peca (2 variacoes cada), convertidas para mono 16 bits / 44,1 kHz,
+recortadas e com fade no final. Para refazer o kit: tools/make_kit.py

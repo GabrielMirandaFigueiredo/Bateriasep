@@ -34,6 +34,12 @@ juce_add_plugin(BateriaSep
     VST3_CATEGORIES Fx
     COPY_PLUGIN_AFTER_BUILD FALSE)
 
+# kit padrão de triggers (samples em domínio público) embutido no plugin
+juce_add_binary_data(BateriaSepKit
+    HEADER_NAME "KitData.h"
+    NAMESPACE KitData
+    SOURCES assets/default_kit.zip)
+
 target_sources(BateriaSep PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginProcessor.h
@@ -43,6 +49,8 @@ target_sources(BateriaSep PRIVATE
     Source/OrtLoader.h
     Source/DrumSeparator.h
     Source/BpmDetector.h
+    Source/MidiExtractor.h
+    Source/TriggerEngine.h
     Source/Project.h)
 
 target_include_directories(BateriaSep PRIVATE Source "${ONNXRUNTIME_ROOT}/include")
@@ -62,6 +70,7 @@ endif()
 target_link_libraries(BateriaSep
     PRIVATE
         juce::juce_audio_utils
+        BateriaSepKit
         ${CMAKE_DL_LIBS}
     PUBLIC
         juce::juce_recommended_config_flags)
@@ -77,6 +86,10 @@ elseif(APPLE)
 else()
     file(GLOB ORT_LIB_SRC "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so.*.*.*")
     get_filename_component(ORT_LIB_DST "${ORT_LIB_SRC}" NAME)
+endif()
+
+if(NOT ORT_LIB_SRC OR NOT EXISTS "${ORT_LIB_SRC}")
+    message(FATAL_ERROR "Biblioteca do ONNX Runtime nao encontrada em ${ONNXRUNTIME_ROOT}/lib")
 endif()
 
 foreach(fmt VST3 Standalone)
@@ -103,6 +116,6 @@ if(BATERIASEP_BUILD_TESTS)
     if(MSVC)
         target_compile_options(BateriaSepTest PRIVATE /utf-8)
     endif()
-    target_link_libraries(BateriaSepTest PRIVATE juce::juce_audio_utils ${CMAKE_DL_LIBS}
+    target_link_libraries(BateriaSepTest PRIVATE juce::juce_audio_utils BateriaSepKit ${CMAKE_DL_LIBS}
         juce::juce_recommended_config_flags)
 endif()

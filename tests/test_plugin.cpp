@@ -230,6 +230,236 @@ int main (int argc, char** argv)
     }
 
     // ---- Reabrir o projeto da DAW (estado) ---------------------------------------------------------------------
+    // ---- MIDI -----------------------------------------------------------------------------------------
+    std::printf ("== MIDI ==\n");
+    {
+        proc.setMidiTempo (sd->bpm.bpm);
+        const auto midiPaths = proc.getMidiPaths();
+        check (midiPaths.size() == 6, "6 arquivos .mid (um por peça)");
+        const auto combined = proc.getMidiCombinedPath();
+        check (juce::File (combined).existsAsFile(), "arquivo .mid único com todas as peças");
+        std::printf ("  %s\n", proc.getMidiSummary().toRawUTF8());
+
+        auto readMidi = [] (const juce::String& path, int& notes, int& minVel, int& maxVel, double& bpm, int& ppq)
+        {
+            notes = 0; minVel = 999; maxVel = 0; bpm = 0; ppq = 0;
+            juce::MidiFile mf;
+            juce::FileInputStream in { juce::File (path) };
+            if (! in.openedOk() || ! mf.readFrom (in)) return false;
+            ppq = mf.getTimeFormat();
+            mf.convertTimestampTicksToSeconds();
+            for (int t = 0; t < mf.getNumTracks(); ++t)
+                for (auto* e : *mf.getTrack (t))
+                {
+                    if (e->message.isNoteOn()) { ++notes; minVel = std::min (minVel, (int) e->message.getVelocity()); maxVel = std::max (maxVel, (int) e->message.getVelocity()); }
+                    if (e->message.isTempoMetaEvent()) bpm = 60.0 / e->message.getTempoSecondsPerQuarterNote();
+                }
+            return true;
+        };
+
+        int total = 0;
+        bool allRead = true;
+        for (auto& pth : midiPaths)
+        {
+            int n, lo, hi, ppq; double bpm;
+            allRead = readMidi (pth, n, lo, hi, bpm, ppq) && allRead;
+            total += n;
+            std::printf ("  %-40s %3d notas, velocity %d..%d, %.1f BPM\n", juce::File (pth).getFileName().toRawUTF8(), n, n ? lo : 0, hi, bpm);
+        }
+        check (allRead, "todos os .mid abrem e são válidos");
+        int nAll, lo, hi, ppq; double bpmAll;
+        readMidi (combined, nAll, lo, hi, bpmAll, ppq);
+        check (nAll == total && total > 20, "o MIDI único tem as mesmas notas das peças somadas");
+        check (std::abs (bpmAll - sd->bpm.bpm) < 0.2, "tempo do MIDI = BPM detectado");
+        check (hi >= 120 && lo >= 1 && lo < hi, "velocities variam de acordo com a dinâmica");
+
+        // mais sensibilidade = mais (ou as mesmas) notas
+        const int before = total;
+        setParam (proc, "midiSens", 1.0f);
+        int total2 = 0;
+        for (auto& pth : proc.getMidiPaths()) { int n, l2, h2, q; double b; readMidi (pth, n, l2, h2, b, q); total2 += n; }
+        std::printf ("  sensibilidade 0.5 -> %d notas; 1.0 -> %d notas\n", before, total2);
+        check (total2 >= before, "sensibilidade máxima gera mais notas");
+        setParam (proc, "midiSens", 0.5f);
+        proc.getMidiPaths();
+
+        juce::String msg;
+        const auto midiOut = outDir.getChildFile ("export_midi");
+        check (proc.exportMidi (midiOut, msg) && midiOut.getNumberOfChildFiles (juce::File::findFiles, "*.mid") == 7, "exportar 7 arquivos MIDI");
+        snapshot (proc, *editor, outDir.getChildFile ("ui_midi.png"));
+    }
+
+    // ---- Triggers -------------------------------------------------------------------------------------
+    std::printf ("== Triggers ==\n");
+    {
+        auto readWav = [] (const juce::File& f, std::vector<float>& out)
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+            if (r == nullptr) return false;
+            juce::AudioBuffer<float> b (2, (int) r->lengthInSamples);
+            r->read (&b, 0, (int) r->lengthInSamples, 0, true, true);
+            out.assign (b.getReadPointer (0), b.getReadPointer (0) + b.getNumSamples());
+            return true;
+        };
+        auto hitTimes = [] (const juce::String& path, std::vector<std::pair<double, int>>& v)
+        {
+            juce::MidiFile mf;
+            juce::FileInputStream in { juce::File (path) };
+            if (! in.openedOk() || ! mf.readFrom (in)) return;
+            mf.convertTimestampTicksToSeconds();
+            for (auto* e : *mf.getTrack (0))
+                if (e->message.isNoteOn()) v.push_back ({ e->message.getTimeStamp(), (int) e->message.getVelocity() });
+        };
+
+        proc.setMidiTempo (sd->bpm.bpm);
+        const auto mids = proc.getMidiPaths();
+        std::vector<std::pair<double, int>> snareHits;
+        hitTimes (mids[1], snareHits);
+        check (snareHits.size() > 10, "há golpes de caixa para os triggers");
+
+        check (proc.getTriggerSourceLabel (1).startsWith ("Kit"), "kit padrão é o som inicial");
+        check (! proc.anyTriggerOn(), "tudo em Original no começo");
+
+        // --- Substituir a caixa (kit padrão), exportando com triggers
+        setParam (proc, "tm1", 2.0f);
+        check (proc.anyTriggerOn(), "caixa em Substituir");
+        proc.rebuildTriggerPlan();
+        check (proc.triggerPlanReady(), "plano de triggers pronto");
+
+        setParam (proc, "trigExport", 1.0f);
+        juce::String msg;
+        const auto trigOut = outDir.getChildFile ("export_trig");
+        trigOut.deleteRecursively();
+        check (proc.exportStems (trigOut, 0, msg), "exportar com triggers");
+        std::printf ("  %s\n", msg.toRawUTF8());
+        check (msg.contains ("triggers"), "a mensagem informa que os triggers foram aplicados");
+
+        std::vector<float> origSnare, newSnare, origKick, newKick;
+        readWav (trigOut.getChildFile (stemFileName (src->name, 1)), newSnare);
+        readWav (trigOut.getChildFile (stemFileName (src->name, 0)), newKick);
+        const auto stemDir = sd->folder;
+        readWav (stemDir.getChildFile (stemFileName (src->name, 1)), origSnare);
+        readWav (stemDir.getChildFile (stemFileName (src->name, 0)), origKick);
+        check (origKick == newKick, "peças em Original saem idênticas");
+        check (! newSnare.empty() && newSnare.size() == origSnare.size(), "caixa trocada tem o mesmo comprimento");
+
+        // alinhamento + dinâmica: o pico do sample em cada golpe acompanha o pico do original
+        const double fs = sd->stems[0]->sampleRate;
+        std::vector<double> po, pn;
+        int aligned = 0;
+        for (auto& h : snareHits)
+        {
+            const int64_t c = (int64_t) (h.first * fs);
+            auto peakIn = [&] (const std::vector<float>& x, int64_t a, int64_t b)
+            {
+                float m = 0.0f;
+                for (int64_t i = std::max<int64_t> (0, a); i < std::min<int64_t> ((int64_t) x.size(), b); ++i) m = std::max (m, std::abs (x[(size_t) i]));
+                return m;
+            };
+            const int64_t w = (int64_t) (0.03 * fs);
+            po.push_back (peakIn (origSnare, c - (int64_t) (0.005 * fs), c + w));
+            pn.push_back (peakIn (newSnare, c - (int64_t) (0.005 * fs), c + w));
+            // o ataque do sample cai a no máximo 3 ms do golpe
+            const int64_t e = (int64_t) (0.003 * fs);
+            if (peakIn (newSnare, c - e, c + e + (int64_t) (0.004 * fs)) > 0.5f * pn.back()) ++aligned;
+        }
+        double mo = 0, mn = 0;
+        for (size_t i = 0; i < po.size(); ++i) { mo += po[i]; mn += pn[i]; }
+        mo /= (double) po.size(); mn /= (double) po.size();
+        double sxy = 0, sxx = 0, syy = 0;
+        for (size_t i = 0; i < po.size(); ++i) { sxy += (po[i] - mo) * (pn[i] - mn); sxx += (po[i] - mo) * (po[i] - mo); syy += (pn[i] - mn) * (pn[i] - mn); }
+        const double corr = sxy / std::sqrt (sxx * syy + 1e-12);
+        std::printf ("  golpes alinhados: %d/%d, correlação de dinâmica original x trigger: %.2f\n", aligned, (int) snareHits.size(), corr);
+        check (aligned >= (int) snareHits.size() * 9 / 10, "o ataque do sample cai em cima do golpe (<= 3 ms)");
+        check (corr > 0.7, "a intensidade do sample acompanha a dinâmica do músico");
+
+        // --- arrastar usa os arquivos com trigger
+        auto dragPaths = proc.getStemPaths();
+        check (dragPaths.size() == 6 && dragPaths[1].contains ("Triggers") && ! dragPaths[0].contains ("Triggers"),
+               "arrastar: só as peças trocadas vêm da pasta Triggers");
+        setParam (proc, "trigExport", 0.0f);
+        check (! proc.getStemPaths()[1].contains ("Triggers"), "sem 'exportar com triggers', arrasta os originais");
+
+        // --- Player: ouvir só a caixa, Original x Substituir x Somar
+        setParam (proc, "s1", 1.0f);
+        auto playEnergy = [&] (int mode)
+        {
+            setParam (proc, "tm1", (float) mode);
+            proc.seekSeconds (2.0);
+            proc.play();
+            std::vector<float> l, r;
+            run (proc, 400, bs, l, r);
+            proc.pause();
+            double e = 0; bool bad = false;
+            for (float v : l) { e += (double) v * v; bad = bad || ! std::isfinite (v); }
+            check (! bad, "saída sem NaN (modo " + juce::String (mode) + ")");
+            return std::make_pair (e, l);
+        };
+        auto [eO, lO] = playEnergy (0);
+        auto [eS, lS] = playEnergy (2);
+        auto [eA, lA] = playEnergy (1);
+        std::printf ("  energia da caixa: original %.3g | substituir %.3g | somar %.3g\n", eO, eS, eA);
+        check (eO > 0 && eS > 0, "o player toca a caixa original e a trocada");
+        double diff = 0; for (size_t i = 0; i < lO.size(); ++i) diff += std::abs (lO[i] - lS[i]);
+        check (diff > 1.0, "Substituir soa diferente do original");
+        check (eA > eO * 0.9, "Somar tem pelo menos a energia do original");
+        setParam (proc, "tl1", -12.0f);
+        auto [eS2, lS2] = playEnergy (2);
+        check (eS2 < eS * 0.2, "o nível do trigger (-12 dB) abaixa o sample");
+        setParam (proc, "tl1", 0.0f);
+        setParam (proc, "s1", 0.0f);
+
+        // --- samples do usuário: 1 arquivo = 1 intensidade
+        auto makeTone = [&] (const juce::String& name, float amp)
+        {
+            const auto f = outDir.getChildFile (name);
+            f.deleteFile();
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::AudioFormatWriter> w (wav.createWriterFor (new juce::FileOutputStream (f), 44100.0, 1, 16, {}, 0));
+            juce::AudioBuffer<float> b (1, 8000);
+            for (int i = 0; i < 8000; ++i) b.setSample (0, i, amp * std::sin (2.0f * juce::MathConstants<float>::pi * 200.0f * (float) i / 44100.0f) * std::exp (-(float) i / 1500.0f));
+            w->writeFromAudioSampleBuffer (b, 0, 8000);
+            return f.getFullPathName();
+        };
+        juce::StringArray mine { makeTone ("meu_1_suave.wav", 0.2f), makeTone ("meu_2_forte.wav", 0.9f) };
+        check (proc.setTriggerSamples (0, mine, msg), "importar 2 samples para o bumbo");
+        check (proc.getTriggerSourceLabel (0).contains ("samples seus"), "o rótulo mostra samples do usuário");
+        juce::String bad;
+        check (! proc.setTriggerSamples (0, { outDir.getChildFile ("nao_existe.wav").getFullPathName() }, bad) && bad.isNotEmpty(),
+               "arquivo inválido gera aviso e não altera o kit");
+        check (proc.getTriggerSourceLabel (0).contains ("samples seus"), "kit anterior preservado após erro");
+
+        setParam (proc, "tm0", 2.0f);
+        setParam (proc, "trigExport", 1.0f);
+        const auto trigOut2 = outDir.getChildFile ("export_trig2");
+        trigOut2.deleteRecursively();
+        check (proc.exportStems (trigOut2, 0, msg), "exportar com samples do usuário");
+        readWav (trigOut2.getChildFile (stemFileName (src->name, 0)), newKick);
+        float kPeak = 0; for (float v : newKick) kPeak = std::max (kPeak, std::abs (v));
+        check (kPeak > 0.1f && kPeak <= 1.2f, "bumbo trocado pelo sample do usuário tem volume razoável");
+
+        // o estado do projeto guarda os samples do usuário
+        juce::MemoryBlock st;
+        proc.getStateInformation (st);
+        {
+            BateriaSepProcessor p2;
+            p2.setPlayConfigDetails (2, 2, sr, bs);
+            p2.setStateInformation (st.getData(), (int) st.getSize());
+            check (p2.getTriggerSourceLabel (0).contains ("samples seus"), "o projeto reabre com os samples do usuário");
+            check (p2.getTriggerSourceLabel (1).startsWith ("Kit"), "e com o kit padrão nas outras peças");
+        }
+
+        proc.useDefaultTriggerKit (0);
+        check (proc.getTriggerSourceLabel (0).startsWith ("Kit"), "voltar ao kit padrão");
+
+        setParam (proc, "tm0", 2.0f); setParam (proc, "tm1", 1.0f); setParam (proc, "tm3", 2.0f);
+        snapshot (proc, *editor, outDir.getChildFile ("ui_triggers.png"));
+        setParam (proc, "trigExport", 0.0f);
+        for (int k = 0; k < 6; ++k) setParam (proc, "tm" + juce::String (k), 0.0f);
+    }
+
     std::printf ("== Reabrir projeto ==\n");
     setParam (proc, "g2", -9.0f);
     juce::MemoryBlock state;
