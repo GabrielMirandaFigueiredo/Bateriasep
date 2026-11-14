@@ -6,16 +6,21 @@
 
 namespace ui
 {
-const juce::Colour bg       (0xff14161b);
-const juce::Colour panel    (0xff1e2128);
-const juce::Colour panel2   (0xff272b35);
-const juce::Colour textMain (0xffe8eaee);
-const juce::Colour textDim  (0xff8d95a3);
-const juce::Colour accent   (0xff4fd1c5);
-const juce::Colour amber    (0xfff2b84b);
-const juce::Colour red      (0xffe5645a);
-const juce::Colour stemColours[6] = { juce::Colour (0xffe5645a), juce::Colour (0xfff2b84b), juce::Colour (0xff9b7be8),
-                                      juce::Colour (0xff4fd1c5), juce::Colour (0xff6aa8f5), juce::Colour (0xff7fd36b) };
+// Visuais (skins): 0 = Moderno escuro (padrão), 1 = Mesa SSL 9000 (off-white + laranja, analógico), 2 = Estúdio claro.
+// As cores abaixo mudam quando o usuário troca o visual (setSkin).
+inline int skin = 0;
+inline juce::Colour bg, panel, panel2, ink, textMain, textDim, accent, accentDeep, amber, red;
+inline juce::Colour display, displayText, displayDim, led, tick, playhead, onAccent, capColour, wood1, wood2;
+inline juce::Colour stemColours[6];
+
+inline bool analog() { return skin == 1; }
+inline bool light()  { return skin == 2; }
+inline const char* skinName (int i)
+{
+    static const char* n[3] = { "Moderno escuro", "Mesa SSL 9000", "Est\xc3\xba" "dio claro" };
+    return n[i < 0 ? 0 : (i > 2 ? 2 : i)];
+}
+void setSkin (int index);   // define todas as cores
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -23,8 +28,19 @@ class BsLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     BsLookAndFeel();
+    void updateColours();
     void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h, float sliderPos, float minPos, float maxPos,
                            juce::Slider::SliderStyle, juce::Slider&) override;
+    void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos, float startAngle, float endAngle, juce::Slider&) override;
+    int getSliderThumbRadius (juce::Slider&) override;
+    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool highlighted, bool down) override;
+    void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool highlighted, bool down) override;
+    void drawComboBox (juce::Graphics&, int w, int h, bool isDown, int bx, int by, int bw, int bh, juce::ComboBox&) override;
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
+    juce::Font getComboBoxFont (juce::ComboBox&) override;
+    juce::Font getPopupMenuFont() override;
+
+    static void drawScrew (juce::Graphics&, juce::Point<float> centre, float radius);
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -75,16 +91,20 @@ public:
     // index 0..5 = peças, 6 = master
     StemStrip (BateriaSepProcessor& p, int stemIndex);
 
-    void refresh (const std::shared_ptr<const bateriasep::StemData>& stems, bool hasFiles);
+    void refresh (const std::shared_ptr<const bateriasep::StemData>& stems, bool hasFiles,
+                  const std::shared_ptr<const std::array<std::vector<bateriasep::MidiHit>, 6>>& hits = nullptr);
     void paint (juce::Graphics&) override;
     void resized() override;
     DragHandle& getDragHandle() { return drag; }
+    void applySkin();
     std::function<void (const juce::String&)> onMessage;   // avisos para a barra de status
 
 private:
     BateriaSepProcessor& proc;
     const int index;
     juce::Slider fader;
+    // detecção (ajuste fino de quando cada golpe dispara)
+    juce::Slider kThresh, kAttack, kHold, kReject;
     juce::TextButton muteBtn { "M" }, soloBtn { "S" };
     juce::Label dbLabel;
     DragHandle drag;
@@ -92,10 +112,13 @@ private:
     // triggers (só nas peças) e a opção de exportar com triggers (só no master)
     juce::ComboBox trigMode;
     juce::TextButton trigSamplesBtn;
-    juce::Slider trigLevel;
+    juce::Slider trigLevel;   // knob do nível do sample
     juce::ToggleButton trigExportBtn;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> trigModeAtt;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> trigLevelAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> trigLevelAtt, threshAtt, attackAtt, holdAtt, rejectAtt;
+    juce::Rectangle<int> detArea, trigArea, knobLabelArea[5];
+    int hitCount = -1;
+    std::shared_ptr<const std::array<std::vector<bateriasep::MidiHit>, 6>> shownHits;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> trigExportAtt;
     std::unique_ptr<juce::FileChooser> sampleChooser;
     juce::String shownSourceLabel;
@@ -123,6 +146,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void setSkin (int index, bool save = true);   // troca o visual (0 escuro, 1 SSL, 2 claro)
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int, int) override;
@@ -130,6 +154,7 @@ public:
 private:
     void timerCallback() override;
     void chooseAudioFile();
+    void applySkin();
     void chooseModelFile();
     void chooseExportFolder();
     void chooseMidiFolder();
@@ -141,7 +166,7 @@ private:
     juce::TooltipWindow tooltipWindow { this, 600 };
 
     juce::TextButton loadBtn { "Carregar bateria..." }, cancelBtn { "Cancelar" }, modelBtn { "Localizar modelo..." };
-    juce::ComboBox qualityBox;
+    juce::ComboBox qualityBox, skinBox;
     juce::TextButton playBtn { "Play" }, pauseBtn { "Pause" }, stopBtn { "Stop" };
     juce::ToggleButton loopBtn, origBtn, gridBtn;   // (textos definidos no construtor, em UTF-8)
     juce::TextButton halfBtn, doubleBtn, clearSelBtn;
@@ -163,8 +188,8 @@ private:
     DragHandle dragMidi, dragMidiOne;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> midiSensAtt;
     const void* midiKeyStems = nullptr;
-    float midiKeySens = -1.0f;
     double midiKeyBpm = -1.0, midiRefreshAt = 0.0;
+    uint64_t midiKeySig = 0;
     bool midiBusy = false;
     bool trigBusy = false;
     double trigRetryAt = 0.0;
@@ -173,7 +198,8 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> loopAtt, origAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> qualityAtt;
 
-    juce::Rectangle<int> playerArea, mixerArea;
+    static constexpr float kCheek = 16.0f;
+    juce::Rectangle<int> logoArea, displayArea, controlArea, mixerArea, footerArea;
     std::shared_ptr<const bateriasep::SourceData> shownSource;
     std::shared_ptr<const bateriasep::StemData> shownStems;
     double bpmFactor = 1.0;

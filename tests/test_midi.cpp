@@ -132,6 +132,64 @@ int main()
     check (extractHits (z.data(), z.data(), z.size(), sr, 0, 0.5f).empty(), "silêncio não gera notas");
     check (extractHits (z.data(), z.data(), 10, sr, 0, 0.5f).empty(), "áudio curtíssimo não quebra");
 
+    // ---- Ajustes do usuário (threshold, attack, hold, rejeição) ----------------------------------------
+    std::printf("== Ajustes de detecção ==\n");
+    {
+        // caixa com golpes fortes e fracos (ghost notes) + um golpe extra colado no primeiro (cauda)
+        std::vector<Ev> ev;
+        const float amp[] = { 0.9f, 0.05f, 0.8f, 0.04f, 0.7f, 0.06f, 0.9f, 0.05f };
+        for (int i = 0; i < 8; ++i) ev.push_back ({ 0.5 + 0.4 * i, amp[i], 0.0, 0.05 });
+        auto x = synth (4.0, ev);
+        auto count = [&] (const DetectTune& t) { return extractHits (x.data(), x.data(), x.size(), sr, 1, 0.5f, 0.0f, t).size(); };
+        const size_t base = count (DetectTune());
+        DetectTune strict; strict.thresholdDb = 12.0f;
+        DetectTune loose;  loose.thresholdDb = -12.0f;
+        std::printf ("  padrão %zu notas | threshold +12 dB: %zu | -12 dB: %zu\n", base, count (strict), count (loose));
+        check (count (strict) < base || base <= 4, "threshold mais alto descarta golpes fracos");
+        check (count (strict) >= 4, "threshold alto ainda mantém os golpes fortes");
+        check (count (loose) >= base, "threshold mais baixo aceita mais golpes");
+
+        // hold: dois golpes a 60 ms um do outro viram um só com hold de 150 ms
+        std::vector<Ev> ev2 { { 0.5, 0.9f, 0.0, 0.05 }, { 0.56, 0.8f, 0.0, 0.05 }, { 1.5, 0.9f, 0.0, 0.05 } };
+        auto y = synth (3.0, ev2);
+        DetectTune h1; h1.holdMs = 20.0;
+        DetectTune h2; h2.holdMs = 150.0;
+        const size_t n1 = extractHits (y.data(), y.data(), y.size(), sr, 1, 0.5f, 0.0f, h1).size();
+        const size_t n2 = extractHits (y.data(), y.data(), y.size(), sr, 1, 0.5f, 0.0f, h2).size();
+        std::printf ("  hold 20 ms -> %zu notas, hold 150 ms -> %zu notas\n", n1, n2);
+        check (n1 == 3 && n2 == 2, "intervalo mínimo (hold) junta golpes colados");
+
+        // rejeição de cauda: golpe fraco 100 ms depois de um forte
+        std::vector<Ev> ev3 { { 0.5, 0.9f, 0.0, 0.02 }, { 0.58, 0.25f, 0.0, 0.02 }, { 1.5, 0.9f, 0.0, 0.02 } };
+        auto z3 = synth (3.0, ev3);
+        DetectTune r0; r0.rejectRatio = 0.0f;
+        DetectTune r1; r1.rejectRatio = 0.6f;
+        const size_t a0 = extractHits (z3.data(), z3.data(), z3.size(), sr, 3, 0.5f, 0.0f, r0).size();
+        const size_t a1 = extractHits (z3.data(), z3.data(), z3.size(), sr, 3, 0.5f, 0.0f, r1).size();
+        std::printf ("  rejeição 0%% -> %zu notas, 60%% -> %zu notas\n", a0, a1);
+        check (a1 < a0, "rejeição de cauda remove o golpe fraco colado no forte");
+
+        // attack: subida suave (ruído com entrada lenta) deixa de contar com attack alto
+        std::vector<float> sw ((size_t) (3.0 * sr));
+        for (auto& v : sw) v = 1e-4f * gauss (rng);
+        for (int k = 0; k < 2; ++k)
+        {
+            const size_t st = (size_t) ((0.5 + k) * sr);
+            for (size_t i = 0; i < (size_t) (0.4 * sr); ++i)
+            {
+                const double t = (double) i / sr;
+                const float env = (float) (std::min (1.0, t / 0.03) * std::exp (-t / 0.15));
+                sw[st + i] += 0.5f * env * 0.5f * gauss (rng);
+            }
+        }
+        DetectTune soft; soft.attackDb = -6.0f;
+        DetectTune sharp; sharp.attackDb = 12.0f;
+        const size_t s0 = extractHits (sw.data(), sw.data(), sw.size(), sr, 1, 0.5f, 0.0f, soft).size();
+        const size_t s1 = extractHits (sw.data(), sw.data(), sw.size(), sr, 1, 0.5f, 0.0f, sharp).size();
+        std::printf ("  attack -6 dB -> %zu notas, +12 dB -> %zu notas (entradas suaves)\n", s0, s1);
+        check (s1 <= s0 && s0 >= 2, "attack alto ignora subidas suaves; baixo aceita");
+    }
+
     std::printf (fails ? "\nFALHAS: %d\n" : "\nTODOS OS TESTES PASSARAM\n", fails);
     return fails ? 1 : 0;
 }

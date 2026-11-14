@@ -456,6 +456,13 @@ int main (int argc, char** argv)
 
         setParam (proc, "tm0", 2.0f); setParam (proc, "tm1", 1.0f); setParam (proc, "tm3", 2.0f);
         snapshot (proc, *editor, outDir.getChildFile ("ui_triggers.png"));
+        for (int sk = 0; sk < 3; ++sk)
+        {
+            static_cast<BateriaSepEditor*> (editor.get())->setSkin (sk, false);
+            check (ui::skin == sk, "troca de visual " + juce::String (sk));
+            snapshot (proc, *editor, outDir.getChildFile ("ui_skin" + juce::String (sk) + ".png"));
+        }
+        static_cast<BateriaSepEditor*> (editor.get())->setSkin (0, false);
         setParam (proc, "trigExport", 0.0f);
         for (int k = 0; k < 6; ++k) setParam (proc, "tm" + juce::String (k), 0.0f);
     }

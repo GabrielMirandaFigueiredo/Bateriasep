@@ -33,6 +33,26 @@ constexpr int kick = 36, snare = 38, hatClosed = 42, hatOpen = 46, ride = 51, cr
 constexpr int tomLowFloor = 43, tomLow = 45, tomMid = 47, tomHigh = 50;
 }
 
+// Ajustes finos da detecção, por peça (o usuário regula na tela). Tudo em zero/-1 = comportamento automático.
+struct DetectTune
+{
+    float thresholdDb = 0.0f;     // + = mais exigente (ignora golpes mais fracos); - = aceita golpes mais fracos
+    float attackDb = 0.0f;        // + = só ataques bem bruscos contam; - = aceita subidas mais suaves
+    double holdMs = -1.0;         // intervalo mínimo entre dois golpes (<= 0 = padrão da peça)
+    float rejectRatio = -1.0f;    // 0..1: descarta golpe fraco logo após um forte (cauda/vazamento); < 0 = padrão da peça
+};
+
+inline double defaultHoldMs (int stem)
+{
+    static const double v[6] = { 40, 35, 40, 28, 35, 150 };
+    return v[std::min (5, std::max (0, stem))];
+}
+inline float defaultRejectRatio (int stem)
+{
+    static const float v[6] = { 0.35f, 0.30f, 0.35f, 0.0f, 0.0f, 0.0f };
+    return v[std::min (5, std::max (0, stem))];
+}
+
 namespace midi_detail
 {
 inline float percentile (std::vector<float> v, double p)
@@ -91,7 +111,7 @@ inline double estimatePitch (const std::vector<float>& mono, size_t startSample,
 // globalPeak: pico (linear) da bateria inteira. Serve de referência absoluta para descartar peças que só têm
 // vazamento (ex.: o "ride" de uma gravação em que ninguém tocou ride). 0 = não usar.
 inline std::vector<MidiHit> extractHits (const float* left, const float* right, size_t n, double sr, int stem, float sens,
-                                         float globalPeak = 0.0f)
+                                         float globalPeak = 0.0f, const DetectTune& tune = DetectTune())
 {
     using namespace midi_detail;
     std::vector<MidiHit> out;
@@ -100,7 +120,6 @@ inline std::vector<MidiHit> extractHits (const float* left, const float* right, 
     if (nb < 40 || sr < 8000.0) return out;
     sens = std::min (1.0f, std::max (0.0f, sens));
 
-    static const double refractoryMs[6] = { 40, 35, 40, 28, 35, 150 };
     static const double riseExtraDb[6]  = { 0, 0, 0, 1.5, 1.5, 4.0 };
     static const int baseNote[6] = { gm::kick, gm::snare, gm::tomMid, gm::hatClosed, gm::ride, gm::crash };
 
@@ -130,13 +149,14 @@ inline std::vector<MidiHit> extractHits (const float* left, const float* right, 
 
     const float refLevel = percentile (env, 0.995);
     if (refLevel < 1e-4f) return out;                                // peça praticamente silenciosa
-    const double floorDb = 14.0 + 24.0 * sens;                       // ignora o que está mais que isso abaixo do forte
-    const double riseDb = 11.0 - 6.0 * sens + riseExtraDb[stem];     // subida mínima para contar como ataque
+    const double floorDb = std::max (3.0, 14.0 + 24.0 * sens - (double) tune.thresholdDb);        // ignora o que está mais que isso abaixo do forte
+    const double riseDb = std::max (2.0, 11.0 - 6.0 * sens + riseExtraDb[stem] + (double) tune.attackDb);   // subida mínima para contar como ataque
     float floorLin = refLevel * (float) std::pow (10.0, -floorDb / 20.0);
     if (globalPeak > 0.0f)
-        floorLin = std::max (floorLin, globalPeak * (float) std::pow (10.0, -(38.0 + 16.0 * sens) / 20.0));
+        floorLin = std::max (floorLin, globalPeak * (float) std::pow (10.0, -std::max (8.0, 38.0 + 16.0 * sens - (double) tune.thresholdDb) / 20.0));
     const size_t look = 6;
-    const size_t refr = std::max<size_t> (1, (size_t) refractoryMs[stem]);
+    const double holdMs = tune.holdMs > 0.0 ? tune.holdMs : defaultHoldMs (stem);
+    const size_t refr = std::max<size_t> (1, (size_t) std::lround (holdMs));
 
     struct Cand { size_t onsetBlock, peakBlock; float peak; };
     std::vector<Cand> cands;
@@ -165,9 +185,10 @@ inline std::vector<MidiHit> extractHits (const float* left, const float* right, 
 
     // --- descarta "ataques" fracos logo depois de um golpe forte: são cauda/ressonância/vazamento -------
     {
-        static const double tailMs[6]    = { 300, 60, 300, 0, 0, 0 };
-        static const float  tailRatio[6] = { 0.35f, 0.30f, 0.35f, 0, 0, 0 };
-        if (tailMs[stem] > 0.0)
+        static const double tailMsTab[6] = { 300, 60, 300, 120, 120, 120 };
+        const double tailMs = tailMsTab[stem];
+        const float tailRatio = std::min (1.0f, tune.rejectRatio >= 0.0f ? tune.rejectRatio : defaultRejectRatio (stem));
+        if (tailRatio > 0.0f)
         {
             std::vector<Cand> kept;
             for (auto& c : cands)
@@ -175,7 +196,7 @@ inline std::vector<MidiHit> extractHits (const float* left, const float* right, 
                 if (! kept.empty())
                 {
                     const double dt = (double) (c.onsetBlock - kept.back().onsetBlock) * (double) H * 1000.0 / sr;
-                    if (dt < tailMs[stem] && c.peak < tailRatio[stem] * kept.back().peak) continue;
+                    if (dt < tailMs && c.peak < tailRatio * kept.back().peak) continue;
                 }
                 kept.push_back (c);
             }
@@ -294,7 +315,8 @@ inline std::vector<MidiHit> extractHits (const float* left, const float* right, 
 // escapou para a outra peça.
 struct StemView { const float* left = nullptr; const float* right = nullptr; size_t n = 0; };
 
-inline std::array<std::vector<MidiHit>, 6> extractAllHits (const std::array<StemView, 6>& stems, double sr, float sens)
+inline std::array<std::vector<MidiHit>, 6> extractAllHits (const std::array<StemView, 6>& stems, double sr, float sens,
+                                                           const std::array<DetectTune, 6>* tunes = nullptr)
 {
     float globalPeak = 0.0f;
     for (auto& v : stems)
@@ -303,7 +325,8 @@ inline std::array<std::vector<MidiHit>, 6> extractAllHits (const std::array<Stem
 
     std::array<std::vector<MidiHit>, 6> res;
     for (int s = 0; s < 6; ++s)
-        res[(size_t) s] = extractHits (stems[(size_t) s].left, stems[(size_t) s].right, stems[(size_t) s].n, sr, s, sens, globalPeak);
+        res[(size_t) s] = extractHits (stems[(size_t) s].left, stems[(size_t) s].right, stems[(size_t) s].n, sr, s, sens, globalPeak,
+                                         tunes != nullptr ? (*tunes)[(size_t) s] : DetectTune());
 
     constexpr float kMaskRatio = 40.0f;   // ~32 dB
     for (int s = 3; s <= 5; ++s)

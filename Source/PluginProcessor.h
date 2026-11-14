@@ -47,6 +47,12 @@ public:
     static juce::String trigModeId (int stem) { return "tm" + juce::String (stem); }    // 0 Original, 1 Somar, 2 Substituir
     static juce::String trigLevelId (int stem) { return "tl" + juce::String (stem); }   // nível do sample (dB)
 
+    // ajustes da detecção de golpes (MIDI e triggers), por peça
+    static juce::String detThreshId (int stem) { return "dth" + juce::String (stem); }   // threshold (dB)
+    static juce::String detAttackId (int stem) { return "dat" + juce::String (stem); }   // attack (dB)
+    static juce::String detHoldId (int stem)   { return "dhd" + juce::String (stem); }   // intervalo mínimo (ms)
+    static juce::String detRejectId (int stem) { return "drj" + juce::String (stem); }   // rejeição de cauda (%)
+
     // --- Player ------------------------------------------------------------------------------------
     void play();
     void pause();
@@ -94,7 +100,12 @@ public:
     bool refreshMidi();                      // (re)gera os arquivos .mid se algo mudou; true se há arquivos
     juce::StringArray getMidiPaths();        // um .mid por peça (6)
     juce::String getMidiCombinedPath();      // um único .mid com todas as peças
-    juce::String getMidiSummary() const;     // "Kick 47 | Snare 65 ..." (do último MIDI gerado)
+    juce::String getMidiSummary() const;
+    static int loadSavedSkin();              // visual escolhido pelo usuário (vale para todos os projetos)
+    static void saveSkinChoice (int index);
+    uint64_t detectSignature() const;        // muda quando algum ajuste de detecção muda
+    std::shared_ptr<const std::array<std::vector<bateriasep::MidiHit>, 6>> getHits() const;   // golpes detectados (para a tela)
+    std::array<bateriasep::DetectTune, 6> currentTunes() const;     // "Kick 47 | Snare 65 ..." (do último MIDI gerado)
     bool exportMidi (const juce::File& folder, juce::String& message);
 
     // --- Modelo -------------------------------------------------------------------------------------
@@ -136,6 +147,7 @@ private:
     std::atomic<float>* qualityParam = nullptr;
     std::atomic<float>* midiSensParam = nullptr;
     std::array<std::atomic<float>*, 6> trigModeParams {}, trigLevelParams {};
+    std::array<std::atomic<float>*, 6> detThreshParams {}, detAttackParams {}, detHoldParams {}, detRejectParams {};
     std::atomic<float>* trigExportParam = nullptr;
 
     // cache do MIDI gerado
@@ -144,6 +156,7 @@ private:
         std::weak_ptr<const bateriasep::StemData> stems;
         float sens = -1.0f;
         double bpm = -1.0;
+        std::array<float, 24> tune {};
         std::array<int, 6> counts {};
         juce::StringArray stemFiles;
         juce::String combinedFile;

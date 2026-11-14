@@ -1,5 +1,7 @@
 #include "PluginProcessor.h"
 
+#include <cstring>
+
 #include "KitData.h"
 #include "OrtLoader.h"
 #include "PluginEditor.h"
@@ -205,6 +207,13 @@ BateriaSepProcessor::BateriaSepProcessor()
         trigLevelParams[(size_t) i] = apvts.getRawParameterValue (trigLevelId (i));
     }
     trigExportParam = apvts.getRawParameterValue ("trigExport");
+    for (int i = 0; i < kNumStems; ++i)
+    {
+        detThreshParams[(size_t) i] = apvts.getRawParameterValue (detThreshId (i));
+        detAttackParams[(size_t) i] = apvts.getRawParameterValue (detAttackId (i));
+        detHoldParams[(size_t) i] = apvts.getRawParameterValue (detHoldId (i));
+        detRejectParams[(size_t) i] = apvts.getRawParameterValue (detRejectId (i));
+    }
 
     setStatus ("Clique em \"Carregar bateria...\" para começar."_u8);
 }
@@ -248,6 +257,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout BateriaSepProcessor::createL
                                                                  NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f, AudioParameterFloatAttributes().withLabel ("dB")));
     }
     params.push_back (std::make_unique<AudioParameterBool> (ParameterID { "trigExport", 1 }, "Exportar com triggers", false));
+    for (int i = 0; i < kNumStems; ++i)
+    {
+        const String n (stemName (i));
+        params.push_back (std::make_unique<AudioParameterFloat> (ParameterID { detThreshId (i), 1 }, n + " - detecção: threshold"_u8,
+                                                                 NormalisableRange<float> (-18.0f, 18.0f, 0.5f), 0.0f, AudioParameterFloatAttributes().withLabel ("dB")));
+        params.push_back (std::make_unique<AudioParameterFloat> (ParameterID { detAttackId (i), 1 }, n + " - detecção: attack"_u8,
+                                                                 NormalisableRange<float> (-6.0f, 12.0f, 0.5f), 0.0f, AudioParameterFloatAttributes().withLabel ("dB")));
+        NormalisableRange<float> hold (10.0f, 400.0f, 1.0f);
+        hold.setSkewForCentre (70.0f);
+        params.push_back (std::make_unique<AudioParameterFloat> (ParameterID { detHoldId (i), 1 }, n + " - detecção: intervalo mínimo (hold)"_u8,
+                                                                 hold, (float) defaultHoldMs (i), AudioParameterFloatAttributes().withLabel ("ms")));
+        params.push_back (std::make_unique<AudioParameterFloat> (ParameterID { detRejectId (i), 1 }, n + " - detecção: rejeição de cauda"_u8,
+                                                                 NormalisableRange<float> (0.0f, 80.0f, 1.0f), std::round (defaultRejectRatio (i) * 100.0f),
+                                                                 AudioParameterFloatAttributes().withLabel ("%")));
+    }
     return { params.begin(), params.end() };
 }
 
@@ -846,14 +870,24 @@ bool BateriaSepProcessor::refreshMidiImpl (bool& recomputed)
     double bpm = midiBpm.load();
     if (bpm < 20.0 || bpm > 400.0) bpm = sd->bpm.valid ? sd->bpm.bpm : 120.0;
 
+    const auto tunes = currentTunes();
+    std::array<float, 24> tuneKey {};
+    for (int i = 0; i < 6; ++i)
+    {
+        tuneKey[(size_t) i * 4] = tunes[(size_t) i].thresholdDb;
+        tuneKey[(size_t) i * 4 + 1] = tunes[(size_t) i].attackDb;
+        tuneKey[(size_t) i * 4 + 2] = (float) tunes[(size_t) i].holdMs;
+        tuneKey[(size_t) i * 4 + 3] = tunes[(size_t) i].rejectRatio;
+    }
+
     const std::lock_guard<std::mutex> g (midiMutex);
     if (midiCache.valid && midiCache.stems.lock() == sd && std::abs (midiCache.sens - sens) < 1e-4f
-        && std::abs (midiCache.bpm - bpm) < 0.01)
+        && std::abs (midiCache.bpm - bpm) < 0.01 && midiCache.tune == tuneKey)
         return true;
 
     // as notas só mudam se os stems ou a sensibilidade mudarem (o BPM só afeta os arquivos .mid)
     std::shared_ptr<const std::array<std::vector<bateriasep::MidiHit>, 6>> hitsPtr;
-    if (midiCache.hits != nullptr && midiCache.stems.lock() == sd && std::abs (midiCache.sens - sens) < 1e-4f)
+    if (midiCache.hits != nullptr && midiCache.stems.lock() == sd && std::abs (midiCache.sens - sens) < 1e-4f && midiCache.tune == tuneKey)
     {
         hitsPtr = midiCache.hits;
     }
@@ -866,7 +900,7 @@ bool BateriaSepProcessor::refreshMidiImpl (bool& recomputed)
             views[(size_t) s] = { a.ch[0].data(), a.ch[1].data(), a.ch[0].size() };
         }
         const double sr = sd->stems[0]->sampleRate;
-        hitsPtr = std::make_shared<const std::array<std::vector<bateriasep::MidiHit>, 6>> (bateriasep::extractAllHits (views, sr, sens));
+        hitsPtr = std::make_shared<const std::array<std::vector<bateriasep::MidiHit>, 6>> (bateriasep::extractAllHits (views, sr, sens, &tunes));
         recomputed = true;
     }
     const auto& hits = *hitsPtr;
@@ -875,6 +909,7 @@ bool BateriaSepProcessor::refreshMidiImpl (bool& recomputed)
     c.stems = sd;
     c.sens = sens;
     c.bpm = bpm;
+    c.tune = tuneKey;
     c.hits = hitsPtr;
     for (int s = 0; s < kNumStems; ++s) c.counts[(size_t) s] = (int) hits[(size_t) s].size();
 
@@ -899,6 +934,62 @@ bool BateriaSepProcessor::refreshMidiImpl (bool& recomputed)
     c.valid = ok;
     midiCache = c;
     return ok;
+}
+
+static juce::PropertiesFile::Options settingsOptions()
+{
+    juce::PropertiesFile::Options o;
+    o.applicationName = "BateriaSep";
+    o.filenameSuffix = ".settings";
+    o.osxLibrarySubFolder = "Application Support";
+    o.folderName = "BateriaSep";
+    return o;
+}
+
+int BateriaSepProcessor::loadSavedSkin()
+{
+    juce::PropertiesFile pf (settingsOptions());
+    return juce::jlimit (0, 2, pf.getIntValue ("skin", 0));
+}
+
+void BateriaSepProcessor::saveSkinChoice (int index)
+{
+    juce::PropertiesFile pf (settingsOptions());
+    pf.setValue ("skin", juce::jlimit (0, 2, index));
+    pf.saveIfNeeded();
+}
+
+std::array<bateriasep::DetectTune, 6> BateriaSepProcessor::currentTunes() const
+{
+    std::array<bateriasep::DetectTune, 6> t;
+    for (int i = 0; i < kNumStems; ++i)
+    {
+        t[(size_t) i].thresholdDb = detThreshParams[(size_t) i]->load();
+        t[(size_t) i].attackDb = detAttackParams[(size_t) i]->load();
+        t[(size_t) i].holdMs = (double) detHoldParams[(size_t) i]->load();
+        t[(size_t) i].rejectRatio = detRejectParams[(size_t) i]->load() / 100.0f;
+    }
+    return t;
+}
+
+uint64_t BateriaSepProcessor::detectSignature() const
+{
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&] (float v) { uint32_t b; std::memcpy (&b, &v, 4); h = (h ^ b) * 1099511628211ull; };
+    mix (midiSensParam->load());
+    for (int i = 0; i < kNumStems; ++i)
+    {
+        mix (detThreshParams[(size_t) i]->load()); mix (detAttackParams[(size_t) i]->load());
+        mix (detHoldParams[(size_t) i]->load());   mix (detRejectParams[(size_t) i]->load());
+    }
+    return h;
+}
+
+std::shared_ptr<const std::array<std::vector<bateriasep::MidiHit>, 6>> BateriaSepProcessor::getHits() const
+{
+    const std::lock_guard<std::mutex> g (midiMutex);
+    if (midiCache.stems.expired()) return nullptr;
+    return midiCache.hits;
 }
 
 juce::StringArray BateriaSepProcessor::getMidiPaths()
